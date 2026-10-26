@@ -17,8 +17,6 @@ concurrency:
   cancel-in-progress: false # 让新 run 排队，等旧 run 自己退场
 
 env:
-  SRC_REPO: 2061969365/zen-direct-v2
-  SRC_REF: 24c26779d07861c10c8b24a19a198f17409c6224
   PORT: "8081"
   PROBE_MODEL: deepseek-v4.1-flash-free
   PROBE_INTERVAL_SEC: "300"
@@ -36,8 +34,8 @@ jobs:
       - name: Checkout gateway source
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
+          repository: 2061969365/zen-direct-v2
+          ref: 24c26779d07861c10c8b24a19a198f17409c6224
           path: src
 
       - name: Setup Go
@@ -53,7 +51,6 @@ jobs:
           cd src
           go build -buildvcs=false -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/bin/zen-direct" .
           ls -l "$GITHUB_WORKSPACE/bin/zen-direct"
-          "$GITHUB_WORKSPACE/bin/zen-direct" --help >/dev/null 2>&1 || true
 
       - name: Install cloudflared
         run: |

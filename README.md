@@ -40,7 +40,8 @@ model   = deepseek-v4.1-flash-free
 一次 run 做的事：
 
 1. 从 [`2061969365/zen-direct-v2`](https://github.com/2061969365/zen-direct-v2) 固定 commit
-   `24c2677` 拉源码，`go build` 出 Linux 二进制（**不下载现成产物**）。
+   `24c2677` 拉源码（`gateway.yml` → Checkout gateway source → `ref`），`go build`
+   出 Linux 二进制（**不下载现成产物**）。
 2. `cloudflared` 起命名隧道，等公网 `/health` 返回 200（证明映射真的通了）。
 3. 打一条**真 chat**（`deepseek-v4.1-flash-free`，`max_tokens=8`）必须拿 200，否则判定这个 IP 不可用。
 4. 之后每 5 分钟探一次，同时盯网关日志里的 429。
