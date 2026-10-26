@@ -5,6 +5,11 @@ name: zen-gateway
 
 on:
   workflow_dispatch:
+    inputs:
+      max_run_sec:
+        description: "本次运行时长上限（秒），调试用；默认 3h45m 主动交班"
+        required: false
+        default: "13500"
   schedule:
     - cron: "*/20 * * * *"
 
@@ -20,7 +25,6 @@ env:
   PORT: "8081"
   PROBE_MODEL: deepseek-v4.1-flash-free
   PROBE_INTERVAL_SEC: "300"
-  MAX_RUN_SEC: "13500" # 3h45m 主动交班，硬超时 4h 只作兜底
 
 jobs:
   serve:
@@ -66,6 +70,7 @@ jobs:
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
           ZEN_PUBLIC_HOST: ${{ vars.ZEN_PUBLIC_HOST }}
+          MAX_RUN_SEC: ${{ inputs.max_run_sec || '13500' }}
         run: bash scripts/run-gateway.sh
 
       - name: Handoff and summary
