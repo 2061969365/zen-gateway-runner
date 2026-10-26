@@ -164,7 +164,9 @@ probe_once() {
   PROBE_CODE="$(curl -sS -o "$out" -w '%{http_code}' --max-time 240 \
     -H 'Content-Type: application/json' \
     -H 'Authorization: Bearer public' \
+    -H 'User-Agent: opencode/2.0.29' \
     --data-binary "$PROBE_PAYLOAD" \
+    --dump-header "$RUN/probe.hdr" \
     "$base/v1/chat/completions" 2>>"$RUN/probe.err" || echo 000)"
   PROBE_BODY="$(head -c 300 "$out" 2>/dev/null || true)"
   PROBE_BODY="${PROBE_BODY//$'\n'/ }"
@@ -201,28 +203,45 @@ if [ -n "$EGRESS" ]; then printf '%s\n' "$EGRESS" > "$RUN/egress-ip.txt"; fi
 note "出口 IP：${EGRESS:-未知}"
 
 # 起手必须打一条真 chat 拿到 200，否则这个 IP 不可用。
-# 有公网地址就走公网，一次同时验证「隧道」和「IP 额度」。
+# 有公网地址就先走公网，一次同时验证「隧道」和「IP 额度」。
+BOOT_BASE="http://127.0.0.1:$PORT"
+boot_ok=0
 if [ -n "$PUBLIC_URL" ]; then
-  BOOT_BASE="$PUBLIC_URL"
-  note "起手探测走公网：$BOOT_BASE"
+  note "起手探测走公网：$PUBLIC_URL"
+  probe_once "$PUBLIC_URL"
+  boot_v="$(verdict)"
+  say "boot probe (public) -> $PROBE_CODE ($boot_v)"
+  case "$boot_v" in
+    ok) boot_ok=1 ;;
+    limit) rotate "起手公网探测 429：${PROBE_BODY:0:200}" fast ;;
+    *)
+      if grep -qi 'cf-mitigated' "$RUN/probe.hdr" 2>/dev/null; then
+        warn "Cloudflare 把探针当机器人挑战了（cf-mitigated），改走本地判定"
+      else
+        warn "公网探测 $PROBE_CODE，本地再确认一次"
+      fi
+      ;;
+  esac
 else
-  BOOT_BASE="http://127.0.0.1:$PORT"
   say "起手探测走本地（没有公网地址）"
 fi
+
 attempt=0
 v="fail"
-while [ "$attempt" -lt 6 ]; do
-  attempt=$((attempt + 1))
-  probe_once "$BOOT_BASE"
-  v="$(verdict)"
-  say "boot probe #$attempt -> $PROBE_CODE ($v)"
-  case "$v" in
-    ok) break ;;
-    limit) rotate "起手探测 429：${PROBE_BODY:0:200}" fast ;;
-    *) sleep 20 ;;
-  esac
-done
-if [ "$v" != "ok" ]; then
+if [ "$boot_ok" = "0" ]; then
+  while [ "$attempt" -lt 6 ]; do
+    attempt=$((attempt + 1))
+    probe_once "$BOOT_BASE"
+    v="$(verdict)"
+    say "boot probe #$attempt -> $PROBE_CODE ($v)"
+    case "$v" in
+      ok) boot_ok=1; break ;;
+      limit) rotate "起手探测 429：${PROBE_BODY:0:200}" fast ;;
+      *) sleep 20 ;;
+    esac
+  done
+fi
+if [ "$boot_ok" = "0" ]; then
   rotate "起手探测 6 次没拿到 200（最后一次 $PROBE_CODE）"
 fi
 ok_count=$((ok_count + 1))
