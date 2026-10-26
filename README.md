@@ -43,7 +43,8 @@ model   = deepseek-v4.1-flash-free
    `24c2677` 拉源码（`gateway.yml` → Checkout gateway source → `ref`），`go build`
    出 Linux 二进制（**不下载现成产物**）。
 2. `cloudflared` 起命名隧道，等公网 `/health` 返回 200（证明映射真的通了）。
-3. 打一条**真 chat**（`deepseek-v4.1-flash-free`，`max_tokens=8`）必须拿 200，否则判定这个 IP 不可用。
+3. 从公网地址打一条**真 chat**（`deepseek-v4.1-flash-free`，`max_tokens=8`）必须拿 200，
+   一次同时验证隧道和这个 IP 的额度；没拿到就判定不可用。
 4. 之后每 5 分钟探一次，同时盯网关日志里的 429。
 5. 满足任一条件就交班：起手探测 429 / 日志命中 429 / 连续 3 次探测非 200 / 网关反复崩溃 /
    跑满 3h45m / 隧道反复断开。
@@ -64,7 +65,9 @@ model   = deepseek-v4.1-flash-free
 - 启动：Actions → `zen-gateway` → Run workflow
 - 停掉：Cancel 当前 run。**取消不会触发交班**，但 20 分钟后的 cron 会把它拉起来；
   要彻底停就把 workflow 停用（Actions → 左侧 `zen-gateway` → `…` → Disable workflow）。
-- 换源码版本：改 `gateway.yml` 里的 `SRC_REF`。
+- 快速验证脚本改动：Actions → `smoke` → Run workflow。它编译、起临时隧道、走公网探活，
+  约 3 分钟退出，不碰主链路的并发组。
+- 换源码版本：改 `gateway.yml` / `smoke.yml` 里 Checkout 步骤的 `ref`。
 
 ## 可调项
 
@@ -76,6 +79,9 @@ model   = deepseek-v4.1-flash-free
 | `PROBE_MODEL` | `deepseek-v4.1-flash-free` | 探活用的模型 |
 | `PROBE_INTERVAL_SEC` | `300` | 周期探活间隔 |
 | `MAX_RUN_SEC` | `13500` | 主动交班时间（3h45m），硬超时 4h |
+
+`ZEN_PUBLIC_HOST` 是仓库 Variable，可以留空：留空时会尝试从 cloudflared 拉到远端配置里
+的 `hostname` 自动补，补不到就跳过公网自检。
 
 ## 已知边界
 

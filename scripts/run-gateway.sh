@@ -101,6 +101,21 @@ start_tunnel() {
     CF_PID=$!
     if [ -n "${ZEN_PUBLIC_HOST:-}" ]; then PUBLIC_URL="https://$ZEN_PUBLIC_HOST"; fi
     say "named tunnel pid=$CF_PID host=${PUBLIC_URL:-<未设置 ZEN_PUBLIC_HOST>}"
+    if [ -z "$PUBLIC_URL" ]; then
+      # 没配 ZEN_PUBLIC_HOST 时，尽量从 cloudflared 拉到的远端配置里抠出域名
+      local j
+      for j in $(seq 1 10); do
+        PUBLIC_URL="$(grep -oE '"hostname":"[^"]+"' "$CF_LOG" 2>/dev/null | head -n1 | sed -E 's/.*:"([^"]+)"/\1/' || true)"
+        if [ -n "$PUBLIC_URL" ]; then PUBLIC_URL="https://$PUBLIC_URL"; break; fi
+        if ! kill -0 "$CF_PID" 2>/dev/null; then break; fi
+        sleep 2
+      done
+      if [ -n "$PUBLIC_URL" ]; then
+        note "从隧道配置里读到域名：$PUBLIC_URL"
+      else
+        warn "没设 ZEN_PUBLIC_HOST，也没从隧道配置里读到域名，公网自检将跳过"
+      fi
+    fi
   else
     warn "没有 CF_TUNNEL_TOKEN，用临时隧道（URL 每次都会变）"
     "$BIN/cloudflared" tunnel --no-autoupdate --loglevel info --url "http://127.0.0.1:$PORT" >>"$CF_LOG" 2>&1 &
@@ -142,12 +157,13 @@ watch_logs() {
 }
 
 probe_once() {
+  local base="${1:-http://127.0.0.1:$PORT}"
   local out="$RUN/probe.json"
   PROBE_CODE="$(curl -sS -o "$out" -w '%{http_code}' --max-time 240 \
     -H 'Content-Type: application/json' \
     -H 'Authorization: Bearer public' \
     --data-binary "$PROBE_PAYLOAD" \
-    "http://127.0.0.1:$PORT/v1/chat/completions" 2>>"$RUN/probe.err" || echo 000)"
+    "$base/v1/chat/completions" 2>>"$RUN/probe.err" || echo 000)"
   PROBE_BODY="$(head -c 300 "$out" 2>/dev/null || true)"
   PROBE_BODY="${PROBE_BODY//$'\n'/ }"
 }
@@ -182,12 +198,20 @@ EGRESS="$(sed -n 's/.*"ip":"\([^"]*\)".*/\1/p' "$RUN/ip.json" 2>/dev/null || tru
 if [ -n "$EGRESS" ]; then printf '%s\n' "$EGRESS" > "$RUN/egress-ip.txt"; fi
 note "出口 IP：${EGRESS:-未知}"
 
-# 起手必须打一条真 chat 拿到 200，否则这个 IP 不可用
+# 起手必须打一条真 chat 拿到 200，否则这个 IP 不可用。
+# 有公网地址就走公网，一次同时验证「隧道」和「IP 额度」。
+if [ -n "$PUBLIC_URL" ]; then
+  BOOT_BASE="$PUBLIC_URL"
+  note "起手探测走公网：$BOOT_BASE"
+else
+  BOOT_BASE="http://127.0.0.1:$PORT"
+  say "起手探测走本地（没有公网地址）"
+fi
 attempt=0
 v="fail"
 while [ "$attempt" -lt 6 ]; do
   attempt=$((attempt + 1))
-  probe_once
+  probe_once "$BOOT_BASE"
   v="$(verdict)"
   say "boot probe #$attempt -> $PROBE_CODE ($v)"
   case "$v" in

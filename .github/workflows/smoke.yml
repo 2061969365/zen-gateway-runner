@@ -1,0 +1,79 @@
+name: smoke
+
+# 手动冒烟：跑一遍和主链路一样的编译、隧道、起手探测，但只活 ~3 分钟就退。
+# 用来验证脚本改动，不影响 zen-gateway 的并发组和保活链。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zen-gateway-smoke
+  cancel-in-progress: true
+
+env:
+  PORT: "8081"
+  PROBE_MODEL: deepseek-v4.1-flash-free
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout runner repo
+        uses: actions/checkout@v4
+
+      - name: Checkout gateway source
+        uses: actions/checkout@v4
+        with:
+          repository: 2061969365/zen-direct-v2
+          ref: 24c26779d07861c10c8b24a19a198f17409c6224
+          path: src
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: src/go.sum
+
+      - name: Build linux binary
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          cd src
+          go build -buildvcs=false -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/bin/zen-direct" .
+          ls -l "$GITHUB_WORKSPACE/bin/zen-direct"
+
+      - name: Install cloudflared
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          curl -fsSL --retry 3 --retry-delay 2 \
+            -o bin/cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x bin/cloudflared
+          bin/cloudflared --version
+
+      - name: Serve and probe (short)
+        env:
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+          ZEN_PUBLIC_HOST: ${{ vars.ZEN_PUBLIC_HOST }}
+          MAX_RUN_SEC: "45"
+          PROBE_INTERVAL_SEC: "10"
+        run: bash scripts/run-gateway.sh
+
+      - name: Result
+        if: always()
+        run: |
+          {
+            echo "### smoke"
+            echo ""
+            echo "- 交班原因：\`$(cat run/rotate.flag 2>/dev/null || echo '?')\`"
+            echo "- 时长：$(cat run/uptime.txt 2>/dev/null || echo '?')"
+            echo "- 出口 IP：$(cat run/egress-ip.txt 2>/dev/null || echo '?')"
+            echo "- 公开地址：$(cat run/public-url.txt 2>/dev/null || echo '?')"
+            echo "- 探测统计：$(cat run/probe-stats.txt 2>/dev/null || echo '?')"
+          } >> "$GITHUB_STEP_SUMMARY"
