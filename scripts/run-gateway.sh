@@ -50,15 +50,17 @@ finish_stats() {
 }
 
 # 交班：写原因 -> 记统计 -> 退出。workflow 的收尾步骤负责 dispatch 下一个 run。
+# 第二个参数 fast：429 是确定结论，不必守 180s 的防抖下限。
 rotate() {
-  local reason="$1"
+  local reason="$1" fast="${2:-}" floor=180
+  if [ "$fast" = "fast" ]; then floor=30; fi
   printf '%s\n' "$reason" > "$FLAG"
   note "交班：$reason"
   finish_stats
   # 冷启动就失败时别狂换 runner（每次换都烧一次 Actions 调度）
-  if [ "$SECONDS" -lt 180 ]; then
-    say "起步过快，等 $((180 - SECONDS))s 再交班"
-    sleep $((180 - SECONDS))
+  if [ "$SECONDS" -lt "$floor" ]; then
+    say "起步过快，等 $((floor - SECONDS))s 再交班"
+    sleep $((floor - SECONDS))
   fi
   exit 0
 }
@@ -216,7 +218,7 @@ while [ "$attempt" -lt 6 ]; do
   say "boot probe #$attempt -> $PROBE_CODE ($v)"
   case "$v" in
     ok) break ;;
-    limit) rotate "起手探测 429：${PROBE_BODY:0:200}" ;;
+    limit) rotate "起手探测 429：${PROBE_BODY:0:200}" fast ;;
     *) sleep 20 ;;
   esac
 done
@@ -234,7 +236,7 @@ while :; do
   sleep 15
 
   if [ -s "$REASON" ]; then
-    rotate "日志命中 429：$(head -c 200 "$REASON")"
+    rotate "日志命中 429：$(head -c 200 "$REASON")" fast
   fi
 
   if [ "$SECONDS" -ge "$MAX_RUN" ]; then
@@ -267,7 +269,7 @@ while :; do
         ;;
       limit)
         limit_count=$((limit_count + 1))
-        rotate "周期探测 429：${PROBE_BODY:0:200}"
+        rotate "周期探测 429：${PROBE_BODY:0:200}" fast
         ;;
       *)
         fail_count=$((fail_count + 1))
