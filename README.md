@@ -1,0 +1,85 @@
+# zen-gateway-runner
+
+把 `zen-direct` 网关跑在 GitHub Actions 的 runner 上，用 Cloudflare Tunnel 映射成公网 HTTPS 地址。
+
+核心动机：上游免费额度按**出口 IP** 记账。一台 runner 就是一个 IP，IP 被 429 了就换一台
+（新 run = 新 runner = 新 IP），4 小时无论如何换一次，链路靠 workflow 自派发 + cron 兜底不断。
+
+```
+客户端 -> https://<你的域名>/v1  ->  Cloudflare 隧道 -> runner:8081 (zen-direct) -> opencode.ai
+```
+
+## 一次性配置
+
+### 1. Cloudflare
+
+1. Zero Trust → Networks → Tunnels → **Create a tunnel**（Cloudflared 类型）。
+2. 加一条 Public Hostname：
+   - Subdomain / Domain：随便，例如 `zen.example.com`
+   - Service：`HTTP` → `localhost:8081`
+3. 复制 tunnel token（`eyJ...` 那串，`cloudflared service install` 用到的整段）。
+
+### 2. 本仓库
+
+- Secret：`CF_TUNNEL_TOKEN` = 上面复制的 token
+- Variable：`ZEN_PUBLIC_HOST` = 你的域名，例如 `zen.example.com`（不带 `https://`）
+
+`Settings → Secrets and variables → Actions`。少了 secret 会退化成临时隧道（`trycloudflare.com`，
+每次跑完就换地址，只适合试跑）。
+
+### 3. 客户端
+
+```
+baseURL = https://zen.example.com/v1
+apiKey  = public        # 网关不校验，随便填
+model   = deepseek-v4.1-flash-free
+```
+
+## 生命周期
+
+一次 run 做的事：
+
+1. 从 [`2061969365/zen-direct-v2`](https://github.com/2061969365/zen-direct-v2) 固定 commit
+   `24c2677` 拉源码，`go build` 出 Linux 二进制（**不下载现成产物**）。
+2. `cloudflared` 起命名隧道，等公网 `/health` 返回 200（证明映射真的通了）。
+3. 打一条**真 chat**（`deepseek-v4.1-flash-free`，`max_tokens=8`）必须拿 200，否则判定这个 IP 不可用。
+4. 之后每 5 分钟探一次，同时盯网关日志里的 429。
+5. 满足任一条件就交班：起手探测 429 / 日志命中 429 / 连续 3 次探测非 200 / 网关反复崩溃 /
+   跑满 3h45m / 隧道反复断开。
+6. 收尾步骤 `workflow_dispatch` 下一次运行；`timeout-minutes: 240` 是硬兜底，
+   每小时 `*/20` 的 cron 再兜一层（并发组保证不会同时跑两份）。
+
+### 429 的判定口径
+
+| 来源 | 命中条件 |
+| --- | --- |
+| 探测响应 | HTTP `429`，或响应体含 `FreeUsageLimitError` |
+| 网关日志 | `FreeUsageLimitError`，或 `free-usage 429 … turns=N` |
+
+命中即判死，不做重试、不冷却，直接换 IP。
+
+## 手动操作
+
+- 启动：Actions → `zen-gateway` → Run workflow
+- 停掉：Cancel 当前 run。**取消不会触发交班**，但 20 分钟后的 cron 会把它拉起来；
+  要彻底停就把 workflow 停用（Actions → 左侧 `zen-gateway` → `…` → Disable workflow）。
+- 换源码版本：改 `gateway.yml` 里的 `SRC_REF`。
+
+## 可调项
+
+都在 `gateway.yml` 的 `env:` 里：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `PORT` | `8081` | 网关监听端口，要和 Cloudflare Public Hostname 对上 |
+| `PROBE_MODEL` | `deepseek-v4.1-flash-free` | 探活用的模型 |
+| `PROBE_INTERVAL_SEC` | `300` | 周期探活间隔 |
+| `MAX_RUN_SEC` | `13500` | 主动交班时间（3h45m），硬超时 4h |
+
+## 已知边界
+
+- 仓库是 public，标准 runner 不计费；换成 private 会吃分钟数（4h × 每天 6 次很快就穿）。
+- **没有鉴权**：拿到地址的人都能用你的额度。要收紧就在 Cloudflare 侧加 Access 或 WAF 规则。
+- 额度按 IP 记账，runner 的机房 IP 未必一直可用；连续 429 时会一直换，属正常消耗。
+- GitHub 的 Actions 条款不允许把它当长期通用算力/代理，账号有被限制的风险，自己权衡。
+- 公开仓库的定时 workflow 在仓库 60 天无活动后可能被停用；不过主链路是自派发，cron 只是兜底。
