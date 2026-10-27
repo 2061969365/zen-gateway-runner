@@ -47,7 +47,7 @@ model   = deepseek-v4.1-flash-free
    一次同时验证隧道和这个 IP 的额度；没拿到就判定不可用。
 4. 之后每 5 分钟探一次，同时盯网关日志里的 429。
 5. 满足任一条件就交班：起手探测 429 / 日志命中 429 / 连续 3 次探测非 200 / 网关反复崩溃 /
-   跑满 3h45m / 隧道反复断开。
+   跑满 3h50m / 隧道反复断开。
 6. 收尾步骤 `workflow_dispatch` 下一次运行；`timeout-minutes: 240` 是硬兜底，
    每小时 `*/20` 的 cron 再兜一层（并发组保证不会同时跑两份）。
 
@@ -78,7 +78,7 @@ model   = deepseek-v4.1-flash-free
 | `PORT` | `8081` | 网关监听端口，要和 Cloudflare Public Hostname 对上 |
 | `PROBE_MODEL` | `deepseek-v4.1-flash-free` | 探活用的模型 |
 | `PROBE_INTERVAL_SEC` | `300` | 周期探活间隔 |
-| `MAX_RUN_SEC` | `13500` | 主动交班时间（3h45m），硬超时 4h |
+| `MAX_RUN_SEC` | `13800` | 主动交班时间（3h50m），硬超时 4h |
 
 `ZEN_PUBLIC_HOST` 是仓库 Variable，可以留空：留空时会尝试从 cloudflared 拉到远端配置里
 的 `hostname` 自动补，补不到就跳过公网自检。

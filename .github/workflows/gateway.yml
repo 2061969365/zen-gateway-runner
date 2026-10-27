@@ -9,7 +9,7 @@ on:
       max_run_sec:
         description: "本次运行时长上限（秒），调试用；默认 3h45m 主动交班"
         required: false
-        default: "13500"
+        default: "13800"
   schedule:
     - cron: "*/20 * * * *"
 
@@ -70,7 +70,7 @@ jobs:
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
           ZEN_PUBLIC_HOST: ${{ vars.ZEN_PUBLIC_HOST }}
-          MAX_RUN_SEC: ${{ inputs.max_run_sec || '13500' }}
+          MAX_RUN_SEC: ${{ inputs.max_run_sec || '13800' }}
         run: bash scripts/run-gateway.sh
 
       - name: Handoff and summary
