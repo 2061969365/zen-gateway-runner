@@ -216,6 +216,20 @@ watch_logs
 start_tunnel
 if ! wait_public_health; then
   tail -n 30 "$CF_LOG" 2>/dev/null || true
+  # 配置类错误：重试和交班都不会自愈，直接停下来，避免 3 分钟一次的死循环。
+  if grep -q 'first record does not look like a TLS handshake' "$CF_LOG" 2>/dev/null; then
+    warn "Cloudflare 回源配成了 HTTPS，但网关是明文 HTTP。"
+    warn "到 Zero Trust → Networks → Tunnels → Public Hostname，把 Service 改成 HTTP localhost:$PORT。"
+    printf '配置错误：隧道回源 scheme 不是 HTTP\n' > "$FLAG"
+    printf '%s\n' "config-error" > "$RUN/no-handoff"
+    exit 3
+  fi
+  if grep -qE 'Unauthorized|Invalid tunnel secret|failed to authenticate' "$CF_LOG" 2>/dev/null; then
+    warn "Cloudflare 隧道 token 无效或已轮换，检查 CF_TUNNEL_TOKEN。"
+    printf '配置错误：隧道 token 无效\n' > "$FLAG"
+    printf '%s\n' "config-error" > "$RUN/no-handoff"
+    exit 3
+  fi
   rotate "隧道 180s 没打通 ${PUBLIC_URL:-<无 URL>}"
 fi
 
