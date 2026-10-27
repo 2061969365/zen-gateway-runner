@@ -61,6 +61,9 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT
+# 被平台 SIGTERM/SIGINT 收走时也让 EXIT 清理跑起来（软超时、手动取消）
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 finish_stats() {
   printf '%dh%02dm%02ds\n' $((SECONDS / 3600)) $(((SECONDS % 3600) / 60)) $((SECONDS % 60)) > "$RUN/uptime.txt"
