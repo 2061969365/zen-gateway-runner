@@ -39,9 +39,9 @@ model   = deepseek-v4.1-flash-free
 
 一次 run 做的事：
 
-1. 从 [`2061969365/zen-direct-v2`](https://github.com/2061969365/zen-direct-v2) 固定 commit
-   `24c2677` 拉源码（`gateway.yml` → Checkout gateway source → `ref`），`go build`
-   出 Linux 二进制（**不下载现成产物**）。
+1. 直接用仓库里的预编译二进制 `bin/zen-direct`（Linux amd64，9.5 MB，
+   从 [`zen-direct-v2`](https://github.com/2061969365/zen-direct-v2) `24c2677` 编出来）。
+   **runner 上不编译、不装 Go**，只有 `chmod +x` 和一次可执行性自检。
 2. `cloudflared` 起命名隧道，等公网 `/health` 返回 200（证明映射真的通了）。
 3. 从公网地址打一条**真 chat**（`deepseek-v4.1-flash-free`，`max_tokens=8`）必须拿 200，
    一次同时验证隧道和这个 IP 的额度；没拿到就判定不可用。
@@ -67,19 +67,35 @@ model   = deepseek-v4.1-flash-free
 
 ### 交班有多快
 
-- 二进制按 `SRC_REF` 缓存，命中缓存就跳过 `go build`（省 ~30s）。
+- 不编译：二进制直接在仓库里，checkout 完就能跑。
 - 429 交班没有等待，清理完就走；交班原因不明的失败才守 180s 防抖。
-- 新 run 的固定开销 = runner 分配（~10–20s）+ 二进制（缓存 ~2s / 编译 ~30s）+ 隧道（~10s）
-  + 起手探测（~5s），大约 40–60s 恢复服务。
+- 新 run 的固定开销 ≈ runner 分配（10–20s）+ checkout（2–3s）+ 隧道（~8s）+ 起手探测（~2s），
+  大约 **25–40s** 恢复服务；其中 runner 分配是 GitHub 的硬开销，压不下去。
+
+## 更新二进制
+
+改源码后重新编一份，替换 `bin/zen-direct` 再 push 即可（下一次 run 生效）：
+
+```bash
+git clone https://github.com/2061969365/zen-direct-v2
+cd zen-direct-v2
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+  go build -buildvcs=false -trimpath -ldflags "-s -w" -o ../zen-gateway-runner/bin/zen-direct .
+```
+
+在 Windows 上 commit 时要确认可执行位没丢：
+
+```bash
+git update-index --add --chmod=+x bin/zen-direct
+```
 
 ## 手动操作
 
 - 启动：Actions → `zen-gateway` → Run workflow
 - 停掉：Cancel 当前 run。**取消不会触发交班**，但 20 分钟后的 cron 会把它拉起来；
   要彻底停就把 workflow 停用（Actions → 左侧 `zen-gateway` → `…` → Disable workflow）。
-- 快速验证脚本改动：Actions → `smoke` → Run workflow。它**只起临时隧道**（不碰你的命名隧道），走公网探活，
-  约 3 分钟退出，不碰主链路的并发组。
-- 换源码版本：改 `gateway.yml` / `smoke.yml` 里 Checkout 步骤的 `ref`。
+- 快速验证：Actions → `smoke` → Run workflow。它**只起临时隧道**（不碰你的命名隧道），
+  走公网探活，约 3 分钟退出，不碰主链路的并发组。
 
 ## 可调项
 

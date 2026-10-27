@@ -2,12 +2,13 @@ name: zen-gateway
 
 # 一台 runner = 一个出口 IP。额度按 IP 算，所以「换 IP」= 换一台 runner。
 # 4 小时软交班 + 硬超时兜底 + 每 20 分钟 cron 补位，保证链路不断。
+# 网关用仓库里的预编译二进制（bin/zen-direct），不在 runner 上编译。
 
 on:
   workflow_dispatch:
     inputs:
       max_run_sec:
-        description: "本次运行时长上限（秒），调试用；默认 3h45m 主动交班"
+        description: "本次运行时长上限（秒），调试用；默认 3h50m 主动交班"
         required: false
         default: "13800"
   schedule:
@@ -32,52 +33,26 @@ jobs:
     timeout-minutes: 240
 
     steps:
-      - name: Checkout runner repo
+      - name: Checkout (预编译二进制在这里)
         uses: actions/checkout@v4
 
-      - name: Checkout gateway source
-        uses: actions/checkout@v4
-        with:
-          repository: 2061969365/zen-direct-v2
-          ref: 24c26779d07861c10c8b24a19a198f17409c6224
-          path: src
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-          cache-dependency-path: src/go.sum
-
-      - name: Restore cached gateway binary
-        uses: actions/cache@v4
-        with:
-          path: bin/zen-direct
-          key: zen-direct-24c26779d07861c10c8b24a19a198f17409c6224
-
-      - name: Build linux binary
+      - name: Check binary
         run: |
           set -euo pipefail
-          mkdir -p bin
-          if [ -x bin/zen-direct ]; then
-            # ZEN_PROBE_BODY 指向不存在的文件时二进制会读完就退 2，用它确认产物能跑
-            rc=0
-            ZEN_PROBE_BODY=/nonexistent/zen-probe bin/zen-direct >/dev/null 2>&1 || rc=$?
-            if [ "$rc" = "2" ]; then
-              echo "命中缓存的网关二进制，跳过编译"
-              ls -l bin/zen-direct
-              exit 0
-            fi
-            echo "缓存二进制不可用（rc=$rc），重新编译"
-            rm -f bin/zen-direct
+          chmod +x bin/zen-direct
+          ls -l bin/zen-direct
+          sha256sum bin/zen-direct
+          # ZEN_PROBE_BODY 指向不存在的文件时二进制读完就退 2，用它确认产物能跑
+          rc=0
+          ZEN_PROBE_BODY=/nonexistent/zen-probe bin/zen-direct >/dev/null 2>&1 || rc=$?
+          if [ "$rc" != "2" ]; then
+            echo "::error::bin/zen-direct 跑不起来（rc=$rc）"
+            exit 1
           fi
-          cd src
-          go build -buildvcs=false -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/bin/zen-direct" .
-          ls -l "$GITHUB_WORKSPACE/bin/zen-direct"
 
       - name: Install cloudflared
         run: |
           set -euo pipefail
-          mkdir -p bin
           curl -fsSL --retry 3 --retry-delay 2 \
             -o bin/cloudflared \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64

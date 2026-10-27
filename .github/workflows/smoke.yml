@@ -1,7 +1,7 @@
 name: smoke
 
-# 手动冒烟：跑一遍和主链路一样的编译、隧道、起手探测，但只活 ~3 分钟就退。
-# 用来验证脚本改动，不影响 zen-gateway 的并发组和保活链。
+# 手动冒烟：跑一遍和主链路一样的隧道、起手探测，但只活 ~3 分钟就退。
+# 故意不传 CF_TUNNEL_TOKEN：冒烟只起临时隧道，不和主链路抢同一个命名隧道。
 
 on:
   workflow_dispatch:
@@ -23,50 +23,24 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Checkout runner repo
+      - name: Checkout (预编译二进制在这里)
         uses: actions/checkout@v4
 
-      - name: Checkout gateway source
-        uses: actions/checkout@v4
-        with:
-          repository: 2061969365/zen-direct-v2
-          ref: 24c26779d07861c10c8b24a19a198f17409c6224
-          path: src
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-          cache-dependency-path: src/go.sum
-
-      - name: Restore cached gateway binary
-        uses: actions/cache@v4
-        with:
-          path: bin/zen-direct
-          key: zen-direct-24c26779d07861c10c8b24a19a198f17409c6224
-
-      - name: Build linux binary
+      - name: Check binary
         run: |
           set -euo pipefail
-          mkdir -p bin
-          if [ -x bin/zen-direct ]; then
-            rc=0
-            ZEN_PROBE_BODY=/nonexistent/zen-probe bin/zen-direct >/dev/null 2>&1 || rc=$?
-            if [ "$rc" = "2" ]; then
-              echo "命中缓存的网关二进制，跳过编译"
-              ls -l bin/zen-direct
-              exit 0
-            fi
-            rm -f bin/zen-direct
+          chmod +x bin/zen-direct
+          ls -l bin/zen-direct
+          rc=0
+          ZEN_PROBE_BODY=/nonexistent/zen-probe bin/zen-direct >/dev/null 2>&1 || rc=$?
+          if [ "$rc" != "2" ]; then
+            echo "::error::bin/zen-direct 跑不起来（rc=$rc）"
+            exit 1
           fi
-          cd src
-          go build -buildvcs=false -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/bin/zen-direct" .
-          ls -l "$GITHUB_WORKSPACE/bin/zen-direct"
 
       - name: Install cloudflared
         run: |
           set -euo pipefail
-          mkdir -p bin
           curl -fsSL --retry 3 --retry-delay 2 \
             -o bin/cloudflared \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
@@ -74,8 +48,6 @@ jobs:
           bin/cloudflared --version
 
       - name: Serve and probe (short)
-        # 故意不传 CF_TUNNEL_TOKEN / ZEN_PUBLIC_HOST：冒烟只起临时隧道，
-        # 绝不和主链路抢同一个命名隧道（两个 connector 会互相分走流量）。
         env:
           MAX_RUN_SEC: "45"
           PROBE_INTERVAL_SEC: "10"
