@@ -77,7 +77,7 @@ model   = deepseek-v4.1-flash-free
 - 启动：Actions → `zen-gateway` → Run workflow
 - 停掉：Cancel 当前 run。**取消不会触发交班**，但 20 分钟后的 cron 会把它拉起来；
   要彻底停就把 workflow 停用（Actions → 左侧 `zen-gateway` → `…` → Disable workflow）。
-- 快速验证脚本改动：Actions → `smoke` → Run workflow。它编译、起临时隧道、走公网探活，
+- 快速验证脚本改动：Actions → `smoke` → Run workflow。它**只起临时隧道**（不碰你的命名隧道），走公网探活，
   约 3 分钟退出，不碰主链路的并发组。
 - 换源码版本：改 `gateway.yml` / `smoke.yml` 里 Checkout 步骤的 `ref`。
 
