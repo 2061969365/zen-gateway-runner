@@ -33,12 +33,30 @@ say()  { printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 note() { say "NOTE $*";  echo "::notice::$*"; }
 warn() { say "WARN $*";  echo "::warning::$*"; }
 
+stop_proc() {
+  local pid="$1" name="$2" i
+  if [ -z "$pid" ]; then return 0; fi
+  if ! kill -0 "$pid" 2>/dev/null; then return 0; fi
+  kill -TERM "$pid" 2>/dev/null || true
+  for i in $(seq 1 15); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      say "$name 已退出（${i}s）"
+      return 0
+    fi
+    sleep 1
+  done
+  warn "$name 15s 没退，SIGKILL"
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
 cleanup() {
   local rc=$?
   trap - EXIT
-  for p in "$WATCH_PID" "$CF_PID" "$GW_PID"; do
-    if [ -n "$p" ]; then kill "$p" 2>/dev/null || true; fi
-  done
+  # 顺序有讲究：先断隧道（告诉 Cloudflare 这个 connector 走了），再停网关，
+  # 免得下一个 run 接同一个命名隧道时还被路由到这个已经空掉的 connector。
+  stop_proc "$CF_PID" cloudflared
+  stop_proc "$GW_PID" gateway
+  stop_proc "$WATCH_PID" log-watcher
   wait 2>/dev/null || true
   exit "$rc"
 }
@@ -50,10 +68,10 @@ finish_stats() {
 }
 
 # 交班：写原因 -> 记统计 -> 退出。workflow 的收尾步骤负责 dispatch 下一个 run。
-# 第二个参数 fast：429 是确定结论，不必守 180s 的防抖下限。
+# 第二个参数 fast：429 是确定结论，直接走，不等防抖；只有「原因不明」的失败才守 180s。
 rotate() {
   local reason="$1" fast="${2:-}" floor=180
-  if [ "$fast" = "fast" ]; then floor=30; fi
+  if [ "$fast" = "fast" ]; then floor=0; fi
   printf '%s\n' "$reason" > "$FLAG"
   note "交班：$reason"
   finish_stats
@@ -160,8 +178,9 @@ watch_logs() {
 
 probe_once() {
   local base="${1:-http://127.0.0.1:$PORT}"
+  local max="${2:-90}"
   local out="$RUN/probe.json"
-  PROBE_CODE="$(curl -sS -o "$out" -w '%{http_code}' --max-time 240 \
+  PROBE_CODE="$(curl -sS -o "$out" -w '%{http_code}' --max-time "$max" \
     -H 'Content-Type: application/json' \
     -H 'Authorization: Bearer public' \
     -H 'User-Agent: opencode/2.0.29' \

@@ -39,10 +39,26 @@ jobs:
           go-version: "1.24"
           cache-dependency-path: src/go.sum
 
+      - name: Restore cached gateway binary
+        uses: actions/cache@v4
+        with:
+          path: bin/zen-direct
+          key: zen-direct-24c26779d07861c10c8b24a19a198f17409c6224
+
       - name: Build linux binary
         run: |
           set -euo pipefail
           mkdir -p bin
+          if [ -x bin/zen-direct ]; then
+            rc=0
+            ZEN_PROBE_BODY=/nonexistent/zen-probe bin/zen-direct >/dev/null 2>&1 || rc=$?
+            if [ "$rc" = "2" ]; then
+              echo "命中缓存的网关二进制，跳过编译"
+              ls -l bin/zen-direct
+              exit 0
+            fi
+            rm -f bin/zen-direct
+          fi
           cd src
           go build -buildvcs=false -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/bin/zen-direct" .
           ls -l "$GITHUB_WORKSPACE/bin/zen-direct"
