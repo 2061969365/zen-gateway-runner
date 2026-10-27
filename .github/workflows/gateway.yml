@@ -36,6 +36,27 @@ jobs:
       - name: Checkout (预编译二进制在这里)
         uses: actions/checkout@v4
 
+      - name: Prune old runs (keep 3)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          repo="${{ github.repository }}"
+          keep=3
+          echo "只保留最近 $keep 条已完成的 run，更早的删除"
+          gh api "repos/$repo/actions/workflows/gateway.yml/runs?per_page=100" \
+            --jq '[.workflow_runs[] | select(.status == "completed")] | sort_by(.created_at) | reverse | .[3:] | .[].id' \
+          | while read -r id; do
+              [ -n "$id" ] || continue
+              [ "$id" = "${{ github.run_id }}" ] && continue
+              if gh api -X DELETE "repos/$repo/actions/runs/$id" >/dev/null 2>&1; then
+                echo "deleted run $id"
+              else
+                echo "skip run $id (delete failed)"
+              fi
+            done
+
       - name: Check binary
         run: |
           set -euo pipefail
