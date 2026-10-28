@@ -1,0 +1,36 @@
+name: normal-chat-probe
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: normal streaming chat vs legacy probe
+        run: |
+          ip="$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
+          chmod +x bin/zen-direct
+          PORT=8083 DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw.log 2>&1 &
+          sleep 8
+
+          # 1) 像正常对话：流式，不限 max_tokens
+          chat='{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"用一句话介绍你自己"}],"stream":true}'
+          scode=$(curl -sS -N -o chat.out -w '%{http_code}' --max-time 120 \
+            -H 'Content-Type: application/json' --data-binary "$chat" \
+            http://127.0.0.1:8083/v1/chat/completions || true)
+          echo "job=${{ matrix.n }} ip=$ip chat-stream=$scode"
+          head -c 200 chat.out | tr '\n' ' '; echo
+
+          # 2) 原来的探活方式（非流 + max_tokens 8）
+          probe='{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}'
+          pcode=$(curl -sS -o probe.out -w '%{http_code}' --max-time 120 \
+            -H 'Content-Type: application/json' --data-binary "$probe" \
+            http://127.0.0.1:8083/v1/chat/completions || true)
+          echo "job=${{ matrix.n }} legacy-probe=$pcode"
+          head -c 160 probe.out; echo
