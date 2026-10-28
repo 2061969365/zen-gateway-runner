@@ -1,0 +1,44 @@
+name: o2a-egress
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: baseline (no warp)
+        run: |
+          tar -xzf test/opencode2api.tar.gz
+          cd opencode2api_v1.4.5_linux_amd64
+          jq '.listen="127.0.0.1:8080" | .server_keys=["test-key"] | .anonymous=true | .warp.enabled=false | .models.free_only=true' config.example.json > config.json
+          chmod +x opencode2api
+          ./opencode2api -config config.json > o2a.log 2>&1 &
+          sleep 10
+          echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
+          curl -sS -H 'Authorization: Bearer test-key' --max-time 20 http://127.0.0.1:8080/v1/models -o models.json || true
+          head -c 200 models.json; echo
+          curl -sS -o o.json -w 'baseline -> %{http_code}\n' --max-time 90 \
+            -H 'Authorization: Bearer test-key' -H 'Content-Type: application/json' \
+            -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8}' \
+            http://127.0.0.1:8080/v1/chat/completions || true
+          head -c 300 o.json; echo
+          tail -10 o2a.log || true
+
+      - name: warp egress
+        run: |
+          cd opencode2api_v1.4.5_linux_amd64
+          pkill -f opencode2api || true
+          sleep 2
+          jq '.warp.enabled=true | .warp.pool_size=2' config.json > c2.json
+          ./opencode2api -config c2.json > o2a-warp.log 2>&1 &
+          sleep 25
+          for i in 1 2 3; do
+            curl -sS -o w$i.json -w "warp #$i -> %{http_code}\n" --max-time 90 \
+              -H 'Authorization: Bearer test-key' -H 'Content-Type: application/json' \
+              -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8}' \
+              http://127.0.0.1:8080/v1/chat/completions || true
+          done
+          head -c 300 w1.json; echo
+          grep -iE 'warp|429|trace|exit' o2a-warp.log | tail -12 || true
