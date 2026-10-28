@@ -1,0 +1,47 @@
+name: localhost-vs-tunnel
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: same runner, localhost vs quick tunnel, streaming
+        run: |
+          ip="$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
+          chmod +x bin/zen-direct
+          PORT=8083 DIRECT_DIAG=1 DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw.log 2>&1 &
+          sleep 8
+          echo "job=${{ matrix.n }} ip=$ip"
+
+          curl -sSL --max-time 60 -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          ./cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8083 > cf.log 2>&1 &
+          url=""
+          for i in $(seq 1 30); do
+            url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' cf.log | head -1)
+            [ -n "$url" ] && break
+            sleep 2
+          done
+          echo "tunnel=$url"
+          for i in $(seq 1 15); do
+            c=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$url/health" || true)
+            [ "$c" = "200" ] && break
+            sleep 2
+          done
+          echo "tunnel-health=$c"
+
+          body='{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":true}'
+          l=$(curl -sS -N -o l.out -w '%{http_code}' --max-time 120 -H 'Content-Type: application/json' --data-binary "$body" http://127.0.0.1:8083/v1/chat/completions || true)
+          echo "localhost-stream=$l"
+          t=$(curl -sS -N -o t.out -w '%{http_code}' --max-time 120 -H 'Content-Type: application/json' --data-binary "$body" "$url/v1/chat/completions" || true)
+          echo "tunnel-stream=$t"
+          echo "localhost-head: $(head -c 100 l.out | tr '\n' ' ')"
+          echo "tunnel-head: $(head -c 100 t.out | tr '\n' ' ')"
+          echo "--- gw log ---"; tail -6 gw.log
