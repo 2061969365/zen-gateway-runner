@@ -21,6 +21,12 @@ PROBE_INTERVAL="${PROBE_INTERVAL_SEC:-300}"
 MAX_RUN="${MAX_RUN_SEC:-13500}"
 PROBE_PAYLOAD="$(printf '{"model":"%s","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}' "$PROBE_MODEL")"
 
+# 可选：让网关的上游请求走代理。GitHub runner 的 Azure 出口经常被免费层直接判 429，
+# 换成自己 VPS/住宅代理的出口就能过。仓库 Variables 里配 PROXY_URL 即可。
+if [ -n "${PROXY_URL:-}" ]; then
+  export HTTPS_PROXY="$PROXY_URL" HTTP_PROXY="$PROXY_URL"
+fi
+
 GW_PID=""
 CF_PID=""
 WATCH_PID=""
@@ -205,6 +211,17 @@ verdict() {
   printf 'fail'
 }
 
+# 起手失败时把网关自己的启动日志和探针响应头打出来：
+# ua 版本、是否走了代理、上游有没有 retry-after，一眼就能看出来。
+dump_boot_diag() {
+  say "--- 网关启动日志 ---"
+  head -6 "$GW_STDIO" 2>/dev/null | while IFS= read -r l; do say "gw| $l"; done
+  if [ -s "$RUN/probe.hdr" ]; then
+    say "--- 探针响应头 ---"
+    grep -iE '^(HTTP/|x-|cf-|retry-after)' "$RUN/probe.hdr" 2>/dev/null | head -8 | while IFS= read -r l; do say "hdr| $l"; done
+  fi
+}
+
 say "run start pid=$$ max=${MAX_RUN}s probe_interval=${PROBE_INTERVAL}s"
 
 start_gateway
@@ -257,6 +274,7 @@ if [ -n "$PUBLIC_URL" ]; then
       ok) boot_ok=1; break ;;
       limit)
         if [ "$attempt" -ge "$BOOT_TRIES" ]; then
+          dump_boot_diag
           rotate "起手公网探测 429（试了 $BOOT_TRIES 次）：${PROBE_BODY:0:200}" fast
         fi
         ;;
@@ -286,6 +304,7 @@ if [ "$boot_ok" = "0" ]; then
       ok) boot_ok=1; break ;;
       limit)
         if [ "$attempt" -ge "$BOOT_TRIES" ]; then
+          dump_boot_diag
           rotate "起手探测 429（试了 $BOOT_TRIES 次）：${PROBE_BODY:0:200}" fast
         fi
         ;;
@@ -354,4 +373,5 @@ while :; do
     finish_stats
   fi
 done
+
 

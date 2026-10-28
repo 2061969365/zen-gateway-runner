@@ -85,6 +85,9 @@ jobs:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
           ZEN_PUBLIC_HOST: ${{ vars.ZEN_PUBLIC_HOST }}
           MAX_RUN_SEC: ${{ inputs.max_run_sec || '13800' }}
+          # 可选：上游出口代理（GitHub runner 的 Azure IP 常被免费层限掉）。
+          # 在仓库 Variables 里配 PROXY_URL=http://user:pass@host:port 即可。
+          PROXY_URL: ${{ vars.PROXY_URL }}
         run: bash scripts/run-gateway.sh
 
       - name: Handoff and summary
