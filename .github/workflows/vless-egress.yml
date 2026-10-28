@@ -8,66 +8,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: sing-box + gateway through it
+      - name: vless node in detail
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
           tag=$(gh api repos/SagerNet/sing-box/releases/latest --jq .tag_name)
           ver=${tag#v}
-          echo "sing-box=$tag"
           curl -sSL -o sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/$tag/sing-box-$ver-linux-amd64.tar.gz"
-          tar -xzf sb.tar.gz
-          cp "sing-box-$ver-linux-amd64/sing-box" ./sing-box
-          chmod +x ./sing-box
-
+          tar -xzf sb.tar.gz && cp "sing-box-$ver-linux-amd64/sing-box" ./sing-box && chmod +x ./sing-box
           cat > sb.json <<'JSON'
           {
             "log": { "level": "warn" },
-            "inbounds": [
-              { "type": "mixed", "listen": "127.0.0.1", "listen_port": 10808 }
-            ],
-            "outbounds": [
-              {
-                "type": "vless",
-                "tag": "vless-out",
-                "server": "51.68.34.78",
-                "server_port": 20193,
-                "uuid": "a29738e5-bee1-c0fc-b484-ae7c49cbc828",
-                "flow": "xtls-rprx-vision",
-                "tls": {
-                  "enabled": true,
-                  "server_name": "images.apple.com",
-                  "utls": { "enabled": true, "fingerprint": "chrome" },
-                  "reality": {
-                    "enabled": true,
-                    "public_key": "hHf2yFc9QeF6SB5pN_jswziv6pIEv-mvTlfrP8nOqQI",
-                    "short_id": "0123456789abcdef"
-                  }
-                }
-              }
-            ]
+            "inbounds": [{ "type": "mixed", "listen": "127.0.0.1", "listen_port": 10808 }],
+            "outbounds": [{
+              "type": "vless", "server": "51.68.34.78", "server_port": 20193,
+              "uuid": "a29738e5-bee1-c0fc-b484-ae7c49cbc828", "flow": "xtls-rprx-vision",
+              "tls": { "enabled": true, "server_name": "images.apple.com",
+                "utls": { "enabled": true, "fingerprint": "chrome" },
+                "reality": { "enabled": true,
+                  "public_key": "hHf2yFc9QeF6SB5pN_jswziv6pIEv-mvTlfrP8nOqQI",
+                  "short_id": "0123456789abcdef" } }
+            }]
           }
           JSON
-
-          ./sing-box check -c sb.json && echo "config ok"
           ./sing-box run -c sb.json > sb.log 2>&1 &
           sleep 5
-
           echo "direct-ip=$(curl -sS --max-time 15 https://api.ipify.org || echo fail)"
           echo "proxy-ip=$(curl -sS --max-time 30 --proxy http://127.0.0.1:10808 https://api.ipify.org || echo fail)"
-          tail -5 sb.log || true
+          echo "proxy->opencode=$(curl -sS -o /tmp/oc.json -w '%{http_code}' --max-time 40 --proxy http://127.0.0.1:10808 https://opencode.ai/inference/v1/models || echo fail)"
+          head -c 200 /tmp/oc.json 2>/dev/null; echo
 
           chmod +x bin/zen-direct
-          PORT=8083 DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw-direct.log 2>&1 &
-          PORT=8084 HTTPS_PROXY=http://127.0.0.1:10808 HTTP_PROXY=http://127.0.0.1:10808 \
-            DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw-proxy.log 2>&1 &
-          sleep 10
-
+          PORT=8084 DIRECT_DIAG=1 DIRECT_DEBUG=0 ZEN_TLS=bun \
+            HTTPS_PROXY=http://127.0.0.1:10808 HTTP_PROXY=http://127.0.0.1:10808 \
+            ./bin/zen-direct > gw-proxy.log 2>&1 &
+          sleep 8
           body='{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
-          probe() { curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -H 'Content-Type: application/json' -d "$body" "$1/v1/chat/completions" || true; }
-          for i in 1 2 3; do
-            echo "round $i: direct=$(probe http://127.0.0.1:8083) via-vless=$(probe http://127.0.0.1:8084)"
-          done
-          echo "--- direct log ---"; grep -iE 'free-usage|429' gw-direct.log | tail -3 || true
-          echo "--- proxy log ---";  grep -iE 'free-usage|429' gw-proxy.log | tail -3 || true
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' --max-time 90 -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8084/v1/chat/completions || true)
+          echo "gateway-via-vless -> $code"
+          head -c 400 /tmp/resp.json; echo
+          echo "--- gw log ---"
+          tail -12 gw-proxy.log
