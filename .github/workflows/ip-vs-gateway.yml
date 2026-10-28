@@ -2,39 +2,25 @@ name: ip-vs-gateway
 on:
   workflow_dispatch:
 jobs:
-  compare:
+  sample:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
-
-      - name: same ip, two configs
+      - name: one probe per runner
         run: |
           chmod +x bin/zen-direct
-          echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
-
-          # A: 节点实际用的那套 env
-          DIRECT_DIAG=1 DIRECT_DEBUG=0 DIRECT_CONCURRENCY=16 DIRECT_FREELIMIT_COOLDOWN=0 \
-            ZEN_TLS=bun DIRECT_SIDECAR=off PORT=8083 ZEN_RUN_ID=test \
-            ./bin/zen-direct > a.log 2>&1 &
-
-          # B: 最小 env（只有端口）
-          PORT=8084 ./bin/zen-direct > b.log 2>&1 &
-
-          sleep 10
-          head -4 a.log
-          head -4 b.log
-
-          probe() {
-            curl -sS -o /tmp/o.json -w "%{http_code}" --max-time 90 \
-              -H 'Content-Type: application/json' \
-              -H 'Authorization: Bearer public' \
-              -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}' \
-              "$1/v1/chat/completions" || true
-          }
-          for i in 1 2 3; do
-            echo "A(node env) #$i -> $(probe http://127.0.0.1:8083)"
-            echo "B(min env)  #$i -> $(probe http://127.0.0.1:8084)"
-          done
-          echo "--- A log ---"; grep -iE 'ua:|free-usage|429' a.log | tail -4 || true
-          echo "--- B log ---"; grep -iE 'ua:|free-usage|429' b.log | tail -4 || true
+          ip="$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
+          PORT=8085 ./bin/zen-direct > gw.log 2>&1 &
+          sleep 8
+          code="$(curl -sS -o /tmp/o.json -w '%{http_code}' --max-time 90 \
+            -H 'Content-Type: application/json' \
+            -H 'Authorization: Bearer public' \
+            -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}' \
+            http://127.0.0.1:8085/v1/chat/completions || true)"
+          echo "RESULT ip=$ip status=$code job=${{ matrix.n }}"
+          head -c 160 /tmp/o.json; echo
