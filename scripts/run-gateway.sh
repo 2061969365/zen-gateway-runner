@@ -241,24 +241,35 @@ note "出口 IP：${EGRESS:-未知}"
 
 # 起手必须打一条真 chat 拿到 200，否则这个 IP 不可用。
 # 有公网地址就先走公网，一次同时验证「隧道」和「IP 额度」。
+# 每次最多试 3 次（不等待）：还 429 说明这条 IP/这个版本就是不行，立刻交班换 runner。
 BOOT_BASE="http://127.0.0.1:$PORT"
+BOOT_TRIES=3
 boot_ok=0
 if [ -n "$PUBLIC_URL" ]; then
   note "起手探测走公网：$PUBLIC_URL"
-  probe_once "$PUBLIC_URL"
-  boot_v="$(verdict)"
-  say "boot probe (public) -> $PROBE_CODE ($boot_v)"
-  case "$boot_v" in
-    ok) boot_ok=1 ;;
-    limit) rotate "起手公网探测 429：${PROBE_BODY:0:200}" fast ;;
-    *)
-      if grep -qi 'cf-mitigated' "$RUN/probe.hdr" 2>/dev/null; then
-        warn "Cloudflare 把探针当机器人挑战了（cf-mitigated），改走本地判定"
-      else
-        warn "公网探测 $PROBE_CODE，本地再确认一次"
-      fi
-      ;;
-  esac
+  attempt=0
+  while [ "$attempt" -lt "$BOOT_TRIES" ]; do
+    attempt=$((attempt + 1))
+    probe_once "$PUBLIC_URL"
+    boot_v="$(verdict)"
+    say "boot probe (public) #$attempt/$BOOT_TRIES -> $PROBE_CODE ($boot_v)"
+    case "$boot_v" in
+      ok) boot_ok=1; break ;;
+      limit)
+        if [ "$attempt" -ge "$BOOT_TRIES" ]; then
+          rotate "起手公网探测 429（试了 $BOOT_TRIES 次）：${PROBE_BODY:0:200}" fast
+        fi
+        ;;
+      *)
+        if grep -qi 'cf-mitigated' "$RUN/probe.hdr" 2>/dev/null; then
+          warn "Cloudflare 把探针当机器人挑战了（cf-mitigated），改走本地判定"
+        else
+          warn "公网探测 $PROBE_CODE，本地再确认一次"
+        fi
+        break
+        ;;
+    esac
+  done
 else
   say "起手探测走本地（没有公网地址）"
 fi
@@ -266,20 +277,24 @@ fi
 attempt=0
 v="fail"
 if [ "$boot_ok" = "0" ]; then
-  while [ "$attempt" -lt 6 ]; do
+  while [ "$attempt" -lt "$BOOT_TRIES" ]; do
     attempt=$((attempt + 1))
     probe_once "$BOOT_BASE"
     v="$(verdict)"
-    say "boot probe #$attempt -> $PROBE_CODE ($v)"
+    say "boot probe #$attempt/$BOOT_TRIES -> $PROBE_CODE ($v)"
     case "$v" in
       ok) boot_ok=1; break ;;
-      limit) rotate "起手探测 429：${PROBE_BODY:0:200}" fast ;;
-      *) sleep 20 ;;
+      limit)
+        if [ "$attempt" -ge "$BOOT_TRIES" ]; then
+          rotate "起手探测 429（试了 $BOOT_TRIES 次）：${PROBE_BODY:0:200}" fast
+        fi
+        ;;
+      *) : ;;
     esac
   done
 fi
 if [ "$boot_ok" = "0" ]; then
-  rotate "起手探测 6 次没拿到 200（最后一次 $PROBE_CODE）"
+  rotate "起手探测 $BOOT_TRIES 次没拿到 200（最后一次 $PROBE_CODE）"
 fi
 ok_count=$((ok_count + 1))
 note "IP 可用，开始服务"
