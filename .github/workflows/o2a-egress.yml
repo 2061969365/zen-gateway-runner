@@ -5,13 +5,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
 
-      - name: same ip, ours vs opencode2api
+      - name: paired probe
         run: |
-          echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
-
+          ip="$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
           chmod +x bin/zen-direct
           PORT=8083 DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw.log 2>&1 &
 
@@ -23,10 +26,6 @@ jobs:
           sleep 12
 
           body='{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8}'
-          for i in 1 2 3; do
-            ours=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8083/v1/chat/completions || true)
-            theirs=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -H 'Authorization: Bearer test-key' -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8080/v1/chat/completions || true)
-            echo "round $i: ours=$ours opencode2api=$theirs"
-          done
-          echo "--- ours ---"; grep -iE 'free-usage|429' gw.log | tail -3 || true
-          echo "--- theirs ---"; grep -iE 'free-usage|429|error' o2a.log | tail -5 || true
+          ours=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8083/v1/chat/completions || true)
+          theirs=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -H 'Authorization: Bearer test-key' -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8080/v1/chat/completions || true)
+          echo "RESULT ip=$ip ours=$ours o2a=$theirs job=${{ matrix.n }}"
