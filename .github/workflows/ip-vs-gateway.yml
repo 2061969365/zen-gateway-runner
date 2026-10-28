@@ -9,27 +9,42 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: egress ip
-        run: |
-          echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
+        run: echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
 
-      - name: official opencode client
-        run: |
-          set -x
-          npm i -g @opencode/cli@2.2.0
-          opencode --version || true
-          opencode --help 2>&1 | head -40 || true
-          timeout 120 opencode run --model deepseek-v4.1-flash-free "say hi" 2>&1 | tail -25
-          echo "official-exit=$?"
-
-      - name: our gateway (same runner, same ip)
+      - name: gateway with node env (localhost)
         run: |
           chmod +x bin/zen-direct
-          PORT=8083 DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw.log 2>&1 &
+          DIRECT_DIAG=1 DIRECT_DEBUG=0 DIRECT_CONCURRENCY=16 DIRECT_FREELIMIT_COOLDOWN=0 \
+            ZEN_TLS=bun DIRECT_SIDECAR=off PORT=8083 ZEN_RUN_ID=test \
+            ./bin/zen-direct > gw.log 2>&1 &
           sleep 10
           head -6 gw.log
-          curl -sS -o out.json -w 'gateway -> %{http_code}\n' --max-time 90 \
-            -H 'Content-Type: application/json' \
-            -H 'Authorization: Bearer public' \
-            -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"hi"}],"max_tokens":8,"stream":false}' \
-            http://127.0.0.1:8083/v1/chat/completions || true
-          head -c 400 out.json; echo
+          for i in 1 2 3; do
+            curl -sS -o out$i.json -w "localhost #$i -> %{http_code}\n" --max-time 90 \
+              -H 'Content-Type: application/json' \
+              -H 'Authorization: Bearer public' \
+              -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}' \
+              http://127.0.0.1:8083/v1/chat/completions || true
+          done
+          head -c 200 out1.json; echo
+
+      - name: gateway through cloudflare quick tunnel
+        run: |
+          curl -sSL --max-time 60 -o /tmp/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x /tmp/cloudflared
+          /tmp/cloudflared tunnel --url http://127.0.0.1:8083 --no-autoupdate > cf.log 2>&1 &
+          for i in $(seq 1 30); do
+            url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' cf.log | head -1)
+            [ -n "$url" ] && break
+            sleep 2
+          done
+          echo "tunnel=$url"
+          for i in 1 2 3; do
+            curl -sS -o cf$i.json -w "tunnel #$i -> %{http_code}\n" --max-time 90 \
+              -H 'Content-Type: application/json' \
+              -H 'Authorization: Bearer public' \
+              -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}' \
+              "$url/v1/chat/completions" || true
+          done
+          head -c 300 cf1.json; echo
+          grep -iE 'free-usage|429' gw.log | tail -5 || true
