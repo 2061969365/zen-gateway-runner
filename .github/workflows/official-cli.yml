@@ -1,0 +1,40 @@
+name: official-cli-test
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: official opencode cli
+        run: |
+          echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
+          npm i -g @opencode/cli@latest
+          echo "cli-version=$(opencode --version 2>&1 | tail -1)"
+          echo "--- run help ---"
+          opencode run --help 2>&1 | head -25 || true
+          echo "--- models ---"
+          opencode models 2>&1 | head -25 || true
+          echo "--- run (bare) ---"
+          timeout 150 opencode run "say hi" 2>&1 | tail -30
+          echo "bare-exit=$?"
+
+      - name: official cli with explicit model
+        run: |
+          for m in opencode/deepseek-v4.1-flash-free deepseek-v4.1-flash-free opencode/zen; do
+            echo "=== model=$m ==="
+            timeout 120 opencode run --model "$m" "say hi" 2>&1 | tail -12
+            echo "exit=$?"
+          done
+
+      - name: our gateway same runner
+        run: |
+          chmod +x bin/zen-direct
+          PORT=8083 DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw.log 2>&1 &
+          sleep 10
+          curl -sS -o /dev/null -w 'ours -> %{http_code}\n' --max-time 90 \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"hi"}],"max_tokens":8}' \
+            http://127.0.0.1:8083/v1/chat/completions || true
