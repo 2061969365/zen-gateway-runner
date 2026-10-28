@@ -19,7 +19,10 @@ PORT="${PORT:-8081}"
 PROBE_MODEL="${PROBE_MODEL:-deepseek-v4.1-flash-free}"
 PROBE_INTERVAL="${PROBE_INTERVAL_SEC:-300}"
 MAX_RUN="${MAX_RUN_SEC:-13500}"
-PROBE_PAYLOAD="$(printf '{"model":"%s","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}' "$PROBE_MODEL")"
+# 探活必须走流式：实测同一个 IP 上，stream:true 返回 200，stream:false 返回
+# FreeUsageLimitError(429)。非流探活会让每个 run 一启动就误判成"IP 被限"，然后
+# 交班、换 IP、再误判，形成死循环。
+PROBE_PAYLOAD="$(printf '{"model":"%s","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":true}' "$PROBE_MODEL")"
 
 # 可选：让网关的上游请求走代理。GitHub runner 的 Azure 出口经常被免费层直接判 429，
 # 换成自己 VPS/住宅代理的出口就能过。仓库 Variables 里配 PROXY_URL 即可。
