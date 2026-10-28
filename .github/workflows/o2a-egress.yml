@@ -8,37 +8,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: baseline (no warp)
+      - name: same ip, ours vs opencode2api
         run: |
+          echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
+
+          chmod +x bin/zen-direct
+          PORT=8083 DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw.log 2>&1 &
+
           tar -xzf test/opencode2api.tar.gz
           cd opencode2api_v1.4.5_linux_amd64
           jq '.listen="127.0.0.1:8080" | .server_keys=["test-key"] | .anonymous=true | .warp.enabled=false | .models.free_only=true' config.example.json > config.json
           chmod +x opencode2api
           ./opencode2api -config config.json > o2a.log 2>&1 &
-          sleep 10
-          echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
-          curl -sS -H 'Authorization: Bearer test-key' --max-time 20 http://127.0.0.1:8080/v1/models -o models.json || true
-          head -c 200 models.json; echo
-          curl -sS -o o.json -w 'baseline -> %{http_code}\n' --max-time 90 \
-            -H 'Authorization: Bearer test-key' -H 'Content-Type: application/json' \
-            -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8}' \
-            http://127.0.0.1:8080/v1/chat/completions || true
-          head -c 300 o.json; echo
-          tail -10 o2a.log || true
+          sleep 12
 
-      - name: warp egress
-        run: |
-          cd opencode2api_v1.4.5_linux_amd64
-          pkill -f opencode2api || true
-          sleep 2
-          jq '.warp.enabled=true | .warp.pool_size=2' config.json > c2.json
-          ./opencode2api -config c2.json > o2a-warp.log 2>&1 &
-          sleep 25
+          body='{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8}'
           for i in 1 2 3; do
-            curl -sS -o w$i.json -w "warp #$i -> %{http_code}\n" --max-time 90 \
-              -H 'Authorization: Bearer test-key' -H 'Content-Type: application/json' \
-              -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8}' \
-              http://127.0.0.1:8080/v1/chat/completions || true
+            ours=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8083/v1/chat/completions || true)
+            theirs=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -H 'Authorization: Bearer test-key' -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8080/v1/chat/completions || true)
+            echo "round $i: ours=$ours opencode2api=$theirs"
           done
-          head -c 300 w1.json; echo
-          grep -iE 'warp|429|trace|exit' o2a-warp.log | tail -12 || true
+          echo "--- ours ---"; grep -iE 'free-usage|429' gw.log | tail -3 || true
+          echo "--- theirs ---"; grep -iE 'free-usage|429|error' o2a.log | tail -5 || true
