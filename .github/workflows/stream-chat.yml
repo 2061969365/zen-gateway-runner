@@ -1,0 +1,43 @@
+name: stream-chat
+on:
+  workflow_dispatch:
+jobs:
+  chat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 网关 + 流式正常对话
+        run: |
+          chmod +x bin/zen-direct
+          PORT=8083 ZEN_TLS=bun DIRECT_DEBUG=0 ./bin/zen-direct > gw.log 2>&1 &
+          sleep 8
+          echo "ip=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
+
+          body='{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"用一句话介绍你自己"}],"stream":true}'
+          code=$(curl -sS -N -o reply.sse -w '%{http_code}' --max-time 180 \
+            -H 'Content-Type: application/json' --data-binary "$body" \
+            http://127.0.0.1:8083/v1/chat/completions || true)
+          echo "status=$code"
+
+          python3 - <<'PY'
+          import json
+          text = []
+          for line in open('reply.sse', encoding='utf-8', errors='replace'):
+              line = line.strip()
+              if not line.startswith('data:'):
+                  continue
+              payload = line[5:].strip()
+              if payload in ('', '[DONE]'):
+                  continue
+              try:
+                  ev = json.loads(payload)
+              except Exception:
+                  continue
+              for ch in ev.get('choices') or []:
+                  d = ch.get('delta') or {}
+                  if d.get('content'):
+                      text.append(d['content'])
+          print("answer:", ''.join(text).strip()[:300] or "<empty>")
+          PY
