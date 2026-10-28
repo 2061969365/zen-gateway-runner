@@ -5,27 +5,28 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        n: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
 
-      - name: paired probe
+      - name: baseline then warp on the same runner
         run: |
-          ip="$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
-          chmod +x bin/zen-direct
-          PORT=8083 DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw.log 2>&1 &
-
+          echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
           tar -xzf test/opencode2api.tar.gz
           cd opencode2api_v1.4.5_linux_amd64
           jq '.listen="127.0.0.1:8080" | .server_keys=["test-key"] | .anonymous=true | .warp.enabled=false | .models.free_only=true' config.example.json > config.json
           chmod +x opencode2api
-          ./opencode2api -config config.json > o2a.log 2>&1 &
-          sleep 12
-
           body='{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"ping"}],"max_tokens":8}'
-          ours=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8083/v1/chat/completions || true)
-          theirs=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 -H 'Authorization: Bearer test-key' -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8080/v1/chat/completions || true)
-          echo "RESULT ip=$ip ours=$ours o2a=$theirs job=${{ matrix.n }}"
+          probe() { curl -sS -o /tmp/p.json -w '%{http_code}' --max-time 90 -H 'Authorization: Bearer test-key' -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8080/v1/chat/completions || true; }
+
+          ./opencode2api -config config.json > base.log 2>&1 &
+          sleep 10
+          for i in 1 2 3; do echo "baseline #$i -> $(probe)"; done
+
+          pkill -f opencode2api || true
+          sleep 2
+          jq '.warp.enabled=true | .warp.pool_size=2' config.json > c2.json
+          ./opencode2api -config c2.json > warp.log 2>&1 &
+          sleep 30
+          for i in 1 2 3 4 5; do echo "warp #$i -> $(probe)"; done
+          echo "--- warp log ---"
+          grep -iE 'warp|trace|429|exit|error' warp.log | tail -12 || true
