@@ -1,0 +1,69 @@
+name: vless-probe-like-real
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: exact boot-probe path (public tunnel + script payload)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+          ZEN_PUBLIC_HOST: ${{ vars.ZEN_PUBLIC_HOST }}
+          PORT: "8081"
+        run: |
+          set -uo pipefail
+          HOST="${ZEN_PUBLIC_HOST:-}"
+          echo "public-host=${HOST:-<unset>}"
+          echo "direct-ip=$(curl -sS --max-time 15 https://api.ipify.org || echo fail)"
+
+          tag=$(gh api repos/SagerNet/sing-box/releases/latest --jq .tag_name)
+          ver=${tag#v}
+          curl -sSL -o sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/$tag/sing-box-$ver-linux-amd64.tar.gz"
+          tar -xzf sb.tar.gz && cp "sing-box-$ver-linux-amd64/sing-box" ./sing-box && chmod +x ./sing-box
+          cat > sb.json <<'JSON'
+          {
+            "log": { "level": "warn" },
+            "inbounds": [{ "type": "mixed", "listen": "127.0.0.1", "listen_port": 10808 }],
+            "outbounds": [{
+              "type": "vless", "server": "43.168.16.67", "server_port": 443,
+              "uuid": "a29738e5-bee1-c0fc-b484-ae7c49cbc828",
+              "tls": { "enabled": true, "server_name": "sg.fastfaster.kdns.fr" },
+              "transport": { "type": "ws", "path": "/ws-node", "headers": { "Host": "sg.fastfaster.kdns.fr" } }
+            }]
+          }
+          JSON
+          ./sing-box run -c sb.json > sb.log 2>&1 &
+          sleep 6
+          echo "node-ip=$(curl -sS --max-time 30 --proxy http://127.0.0.1:10808 https://api.ipify.org || echo fail)"
+
+          chmod +x bin/zen-direct
+          HTTPS_PROXY=http://127.0.0.1:10808 HTTP_PROXY=http://127.0.0.1:10808 \
+            DIRECT_DIAG=1 DIRECT_DEBUG=0 DIRECT_CONCURRENCY=16 DIRECT_FREELIMIT_COOLDOWN=0 \
+            ZEN_TLS=bun DIRECT_SIDECAR=off PORT=8081 ZEN_RUN_ID=probe-test \
+            ./bin/zen-direct > gw.log 2>&1 &
+          sleep 8
+
+          curl -sSL --max-time 60 -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          ./cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" > cf.log 2>&1 &
+          sleep 15
+          grep -iE 'registered|connection|error' cf.log | head -4 || true
+
+          base="https://$HOST"
+          echo "health=$(curl -sS -o /tmp/h.json -w '%{http_code}' --max-time 30 "$base/health" || echo fail)"
+          head -c 200 /tmp/h.json 2>/dev/null; echo
+
+          # 和 run-gateway.sh 里的 PROBE_PAYLOAD 完全一致
+          PROBE_MODEL="deepseek-v4.1-flash-free"
+          PROBE_PAYLOAD="$(printf '{"model":"%s","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}' "$PROBE_MODEL")"
+          for i in 1 2 3; do
+            code=$(curl -sS -o /tmp/p.json -w '%{http_code}' --max-time 90 \
+              -H 'Content-Type: application/json' -d "$PROBE_PAYLOAD" "$base/v1/chat/completions" || true)
+            echo "public probe #$i -> $code"
+          done
+          head -c 260 /tmp/p.json; echo
+          echo "--- gw log ---"; tail -6 gw.log
