@@ -19,12 +19,13 @@ PORT="${PORT:-8081}"
 PROBE_MODEL="${PROBE_MODEL:-deepseek-v4.1-flash-free}"
 PROBE_INTERVAL="${PROBE_INTERVAL_SEC:-300}"
 MAX_RUN="${MAX_RUN_SEC:-13500}"
-# 探活必须走流式、并且像一次真实对话：
-#   1) 实测同一个 IP 上 stream:true 返回 200，stream:false 返回 FreeUsageLimitError，
-#      非流探活会让每个 run 一启动就误判成"IP 被限"，交班换 IP 再误判，形成死循环；
-#   2) 原来的 ping + max_tokens:8 会被推理内容吃满（finish_reason=length、content 为空），
-#      探的其实是一个被截断的请求，所以改成一句能答完的小问题。
-PROBE_PAYLOAD="$(printf '{"model":"%s","messages":[{"role":"user","content":"请回复：ok"}],"max_tokens":32,"stream":true}' "$PROBE_MODEL")"
+# 探活必须像一次真实对话，而不是一条“请回复：ok”：
+#   1) 实测 stream:true 才有 200，stream:false 直接 FreeUsageLimitError；
+#   2) 免费层额度按上游 session 计。单条一次性请求每次现签一条新 session，
+#      永远探不到真实会话续聊时才会出现的 429；必须带 system + 历史 + 新一轮，
+#      落到同一条 session 上。
+#   3) max_tokens 保持能答完（32 会被推理内容吃满，finish_reason=length）。
+PROBE_PAYLOAD="$(printf '{"model":"%s","messages":[{"role":"system","content":"You are opencode, a coding agent. Answer concisely."},{"role":"user","content":"用一句话说明你能做什么。"},{"role":"assistant","content":"我可以帮你读写代码、运行命令、排查问题。"},{"role":"user","content":"好，只回复：ok"}],"max_tokens":128,"stream":true}' "$PROBE_MODEL")"
 
 # 可选：让网关的上游请求走代理。GitHub runner 的 Azure 出口经常被免费层直接判 429，
 # 换成自己 VPS/住宅代理的出口就能过。仓库 Variables 里配 PROXY_URL 即可。
@@ -282,6 +283,7 @@ if [ -n "$PUBLIC_URL" ]; then
           dump_boot_diag
           rotate "起手公网探测 429（试了 $BOOT_TRIES 次）：${PROBE_BODY:0:200}" fast
         fi
+        if [ "$attempt" -lt "$BOOT_TRIES" ]; then sleep 3; fi
         ;;
       *)
         if grep -qi 'cf-mitigated' "$RUN/probe.hdr" 2>/dev/null; then
@@ -312,6 +314,7 @@ if [ "$boot_ok" = "0" ]; then
           dump_boot_diag
           rotate "起手探测 429（试了 $BOOT_TRIES 次）：${PROBE_BODY:0:200}" fast
         fi
+        if [ "$attempt" -lt "$BOOT_TRIES" ]; then sleep 3; fi
         ;;
       *) : ;;
     esac
