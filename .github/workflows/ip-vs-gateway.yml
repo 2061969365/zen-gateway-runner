@@ -1,0 +1,35 @@
+name: ip-vs-gateway
+on:
+  workflow_dispatch:
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: egress ip
+        run: |
+          echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
+
+      - name: official opencode client
+        run: |
+          set -x
+          npm i -g @opencode/cli@2.2.0
+          opencode --version || true
+          opencode --help 2>&1 | head -40 || true
+          timeout 120 opencode run --model deepseek-v4.1-flash-free "say hi" 2>&1 | tail -25
+          echo "official-exit=$?"
+
+      - name: our gateway (same runner, same ip)
+        run: |
+          chmod +x bin/zen-direct
+          PORT=8083 DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw.log 2>&1 &
+          sleep 10
+          head -6 gw.log
+          curl -sS -o out.json -w 'gateway -> %{http_code}\n' --max-time 90 \
+            -H 'Content-Type: application/json' \
+            -H 'Authorization: Bearer public' \
+            -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"hi"}],"max_tokens":8,"stream":false}' \
+            http://127.0.0.1:8083/v1/chat/completions || true
+          head -c 400 out.json; echo
