@@ -5,36 +5,28 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
-
-      - name: official opencode cli
+      - name: official cli vs our gateway
         run: |
-          echo "egress=$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
-          npm i -g @opencode/cli@latest
-          echo "cli-version=$(opencode --version 2>&1 | tail -1)"
-          echo "--- run help ---"
-          opencode run --help 2>&1 | head -25 || true
-          echo "--- models ---"
-          opencode models 2>&1 | head -25 || true
-          echo "--- run (bare) ---"
-          timeout 150 opencode run "say hi" 2>&1 | tail -30
-          echo "bare-exit=$?"
-
-      - name: official cli with explicit model
-        run: |
-          for m in opencode/deepseek-v4.1-flash-free deepseek-v4.1-flash-free opencode/zen; do
-            echo "=== model=$m ==="
-            timeout 120 opencode run --model "$m" "say hi" 2>&1 | tail -12
-            echo "exit=$?"
-          done
-
-      - name: our gateway same runner
-        run: |
+          ip="$(curl -sS --max-time 15 https://api.ipify.org || echo unknown)"
+          npm i -g @opencode/cli@latest >/dev/null 2>&1
+          out="$(timeout 120 opencode run "say hi" 2>&1 | tail -3)"
+          case "$out" in
+            *"Free usage limit"*) official=429 ;;
+            *"Error"*) official=err ;;
+            *) official=200 ;;
+          esac
           chmod +x bin/zen-direct
           PORT=8083 DIRECT_DEBUG=0 ZEN_TLS=bun ./bin/zen-direct > gw.log 2>&1 &
-          sleep 10
-          curl -sS -o /dev/null -w 'ours -> %{http_code}\n' --max-time 90 \
+          sleep 8
+          ours=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 90 \
             -H 'Content-Type: application/json' \
             -d '{"model":"deepseek-v4.1-flash-free","messages":[{"role":"user","content":"hi"}],"max_tokens":8}' \
-            http://127.0.0.1:8083/v1/chat/completions || true
+            http://127.0.0.1:8083/v1/chat/completions || true)
+          echo "RESULT ip=$ip ours=$ours official=$official job=${{ matrix.n }}"
+          echo "official-said: $(echo "$out" | head -2 | tr '\n' ' ')"
