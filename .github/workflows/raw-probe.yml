@@ -1,0 +1,63 @@
+name: raw-probe
+
+# 最小复现：不跑 run-gateway.sh、不起隧道，只起网关 + 打一发生产探针。
+# 用来判定本仓库 runner 的出口 IP 本身是否被限。
+on:
+  workflow_dispatch:
+
+jobs:
+  raw:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: probe
+        run: |
+          set -uo pipefail
+          chmod +x bin/zen-direct
+          echo "ver=$(cat TEMPLATE_VERSION)"
+          curl -s -m 15 http://ip-api.com/json \
+            | python3 -c 'import json,sys;j=json.load(sys.stdin);print("IP=",j["query"],j.get("isp",""))'
+          W="$PWD/_r"; mkdir -p "$W"
+          PORT=18081 LOG_FILE="$W/gw.log" SHIM_SESSION_FILE="$W/s.json" \
+            DIRECT_DIAG=1 DIRECT_DEBUG=0 DIRECT_CONCURRENCY=16 \
+            DIRECT_FREELIMIT_COOLDOWN=0 DIRECT_FRESH_PER_TURN=0 \
+            ZEN_TLS=bun DIRECT_SIDECAR=off \
+            bin/zen-direct >"$W/e.log" 2>&1 &
+          GW=$!
+          for i in $(seq 1 60); do
+            curl -sf -m 2 http://127.0.0.1:18081/health >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          echo "health: $(curl -s -m 5 http://127.0.0.1:18081/health | head -c 160)"
+          grep -m1 'session policy' "$W/gw.log" || true
+
+          cat > "$W/payload.json" <<'JSON'
+          {"model":"deepseek-v4.1-flash-free","messages":[{"role":"system","content":"You are opencode, a coding agent. Answer concisely."},{"role":"user","content":"用一句话说明你能做什么。"},{"role":"assistant","content":"我可以帮你读写代码、运行命令、排查问题。"},{"role":"user","content":"好，只回复：ok"}],"max_tokens":128,"stream":true}
+          JSON
+          body="$(cat "$W/payload.json")"
+          for n in 1 2 3; do
+            code="$(curl -sS -o "$W/r$n.json" -w '%{http_code}' --max-time 90 \
+              -H 'Content-Type: application/json' \
+              -H 'Authorization: Bearer public' \
+              -H 'User-Agent: zen-probe' \
+              --data-binary "$body" \
+              http://127.0.0.1:18081/v1/chat/completions 2>/dev/null || echo 000)"
+            echo "RESULT$n -> $code"
+            sleep 2
+          done
+          echo "=== head of last body ==="; head -c 180 "$W/r3.json"; echo
+          echo "=== gateway 429 lines ==="
+          grep -E 'free-usage|\[REQ' "$W/gw.log" | sed -E 's/ debug upBody.*//' | tail -10 || true
+          kill "$GW" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: raw-probe
+          path: _r/
