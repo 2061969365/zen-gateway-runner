@@ -267,68 +267,64 @@ EGRESS="$(sed -n 's/.*"ip":"\([^"]*\)".*/\1/p' "$RUN/ip.json" 2>/dev/null || tru
 if [ -n "$EGRESS" ]; then printf '%s\n' "$EGRESS" > "$RUN/egress-ip.txt"; fi
 note "出口 IP：${EGRESS:-未知}"
 
-# 起手必须打一条真 chat 拿到 200，否则这个 IP 不可用。
-# 有公网地址就先走公网，一次同时验证「隧道」和「IP 额度」。
-# 每次最多试 3 次（不等待）：还 429 说明这条 IP/这个版本就是不行，立刻交班换 runner。
+# 起手分两步，互不牵连：
+#   1) 本地回环打一条真 chat —— 只判断「网关 + 上游额度」，与隧道无关；
+#   2) 公网 /health —— 只判断「Cloudflare 隧道通不通」。
+# 早先把 chat 探针直接打公网域名，隧道/边缘返回的 429 会被当成「这个 IP 额度用尽」
+# 而立刻交班，结果是每个 runner 活 30 秒、疯狂换 IP，链路始终起不来。
 BOOT_BASE="http://127.0.0.1:$PORT"
 BOOT_TRIES=3
 boot_ok=0
-if [ -n "$PUBLIC_URL" ]; then
-  note "起手探测走公网：$PUBLIC_URL"
-  attempt=0
-  while [ "$attempt" -lt "$BOOT_TRIES" ]; do
-    attempt=$((attempt + 1))
-    probe_once "$PUBLIC_URL"
-    boot_v="$(verdict)"
-    say "boot probe (public) #$attempt/$BOOT_TRIES -> $PROBE_CODE ($boot_v)"
-    case "$boot_v" in
-      ok) boot_ok=1; break ;;
-      limit)
-        if [ "$attempt" -ge "$BOOT_TRIES" ]; then
-          dump_boot_diag
-          rotate "起手公网探测 429（试了 $BOOT_TRIES 次）：${PROBE_BODY:0:200}" fast
-        fi
-        if [ "$attempt" -lt "$BOOT_TRIES" ]; then sleep 3; fi
-        ;;
-      *)
-        if grep -qi 'cf-mitigated' "$RUN/probe.hdr" 2>/dev/null; then
-          warn "Cloudflare 把探针当机器人挑战了（cf-mitigated），改走本地判定"
-        else
-          warn "公网探测 $PROBE_CODE，本地再确认一次"
-        fi
-        break
-        ;;
-    esac
-  done
-else
-  say "起手探测走本地（没有公网地址）"
-fi
 
 attempt=0
-v="fail"
-if [ "$boot_ok" = "0" ]; then
-  while [ "$attempt" -lt "$BOOT_TRIES" ]; do
-    attempt=$((attempt + 1))
-    probe_once "$BOOT_BASE"
-    v="$(verdict)"
-    say "boot probe #$attempt/$BOOT_TRIES -> $PROBE_CODE ($v)"
-    case "$v" in
-      ok) boot_ok=1; break ;;
-      limit)
-        if [ "$attempt" -ge "$BOOT_TRIES" ]; then
-          dump_boot_diag
-          rotate "起手探测 429（试了 $BOOT_TRIES 次）：${PROBE_BODY:0:200}" fast
-        fi
-        if [ "$attempt" -lt "$BOOT_TRIES" ]; then sleep 3; fi
-        ;;
-      *) : ;;
-    esac
-  done
-fi
+while [ "$attempt" -lt "$BOOT_TRIES" ]; do
+  attempt=$((attempt + 1))
+  probe_once "$BOOT_BASE"
+  v="$(verdict)"
+  say "boot probe (local) #$attempt/$BOOT_TRIES -> $PROBE_CODE ($v)"
+  case "$v" in
+    ok) boot_ok=1; break ;;
+    limit)
+      if [ "$attempt" -ge "$BOOT_TRIES" ]; then
+        dump_boot_diag
+        rotate "起手本地探测 429（试了 $BOOT_TRIES 次）：${PROBE_BODY:0:200}" fast
+      fi
+      if [ "$attempt" -lt "$BOOT_TRIES" ]; then sleep 3; fi
+      ;;
+    *)
+      if [ "$attempt" -ge "$BOOT_TRIES" ]; then
+        dump_boot_diag
+        rotate "起手本地探测 $BOOT_TRIES 次没拿到 200（最后一次 $PROBE_CODE）"
+      fi
+      sleep 2
+      ;;
+  esac
+done
 if [ "$boot_ok" = "0" ]; then
   rotate "起手探测 $BOOT_TRIES 次没拿到 200（最后一次 $PROBE_CODE）"
 fi
 ok_count=$((ok_count + 1))
+note "网关就绪（本地 chat 200），开始验隧道"
+
+# 隧道单独验：只要求公网 /health 回 200。这里出现的 429/5xx 是边缘或回源问题，
+# 记警告后继续服务，不交班——网关上一条真 chat 已经证明额度可用。
+if [ -n "$PUBLIC_URL" ]; then
+  note "验证隧道：$PUBLIC_URL/health"
+  tunnel_ok=0
+  t=0
+  while [ "$t" -lt "$BOOT_TRIES" ]; do
+    t=$((t + 1))
+    code="$(http_code "$PUBLIC_URL/health" 10)"
+    say "tunnel check #$t/$BOOT_TRIES -> $code"
+    if [ "$code" = "200" ]; then tunnel_ok=1; break; fi
+    sleep 3
+  done
+  if [ "$tunnel_ok" = "1" ]; then
+    note "隧道已通：$PUBLIC_URL"
+  else
+    warn "公网 /health 没回到 200（最后一次 $code），隧道可能不稳；继续以本地为准服务"
+  fi
+fi
 note "IP 可用，开始服务"
 
 next_probe=$((SECONDS + PROBE_INTERVAL))
@@ -372,7 +368,12 @@ while :; do
         ;;
       limit)
         limit_count=$((limit_count + 1))
-        rotate "周期探测 429：${PROBE_BODY:0:200}" fast
+        # 单次 429 多半是这条 session 撞满，网关下一发会换号；连续两次才认为是
+        # 这条出口 IP 整体不可用，才值得换 runner。
+        if [ "$limit_count" -ge 2 ]; then
+          rotate "连续 $limit_count 次周期探测 429：${PROBE_BODY:0:200}" fast
+        fi
+        warn "周期探测 429（连续 $limit_count/2），先不下线，等下一轮"
         ;;
       *)
         fail_count=$((fail_count + 1))
