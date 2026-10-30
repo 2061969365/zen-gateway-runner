@@ -106,6 +106,7 @@ start_gateway() {
   DIRECT_DEBUG=0 \
   DIRECT_CONCURRENCY=16 \
   DIRECT_FREELIMIT_COOLDOWN=0 \
+  DIRECT_FRESH_PER_TURN="${DIRECT_FRESH_PER_TURN:-0}" \
   ZEN_TLS=bun \
   ZEN_RUN_ID="${GITHUB_RUN_ID:-}" \
   DIRECT_SIDECAR=off \
@@ -196,10 +197,14 @@ probe_once() {
   local base="${1:-http://127.0.0.1:$PORT}"
   local max="${2:-90}"
   local out="$RUN/probe.json"
+  # UA 不能以 opencode/ 开头：isOfficialUA() 命中后网关走“官方直通”分支，
+  # 不进会话池、不签 session，upSes 为空，第一发就撞上游 free-usage 429
+  # （日志表现就是 ses= 为空 + poisoned+rotate，然后一直换 runner）。
+  # 探针必须和真实 harness 走同一条“池内经现签 session”的路。
   PROBE_CODE="$(curl -sS -o "$out" -w '%{http_code}' --max-time "$max" \
     -H 'Content-Type: application/json' \
     -H 'Authorization: Bearer public' \
-    -H 'User-Agent: opencode/2.0.29' \
+    -H 'User-Agent: zen-probe' \
     --data-binary "$PROBE_PAYLOAD" \
     --dump-header "$RUN/probe.hdr" \
     "$base/v1/chat/completions" 2>>"$RUN/probe.err" || echo 000)"
